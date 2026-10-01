@@ -532,12 +532,15 @@ int _main( int argc, char *argv[] )
 	}
 	HIDClose();
 	IOS_Close(DI_Handle); //close game
+	dbgprintf("Exit:DI closed\r\n");
 	thread_cancel(DI_Thread, 0);
 	DIUnregister();
+	dbgprintf("Exit:DI unregistered\r\n");
 
 	if( ConfigGetConfig(NIN_CFG_MEMCARDEMU) )
 		EXIShutdown();
 
+	dbgprintf("Exit:closing log\r\n");
 	if (ConfigGetConfig(NIN_CFG_LOG))
 		closeLog();
 

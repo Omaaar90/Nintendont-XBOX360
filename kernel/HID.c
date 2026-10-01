@@ -803,12 +803,20 @@ void HIDClose()
 		buf[2] = bEndpointAddressOut;
 		if (bEndpointAddressOut != 0)
 			IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
+		// suspend the device like libogc USB_CloseDevice does
+		memset32(buf, 0, 0x20);
+		buf[0] = ControllerID;
+		buf[2] = 0;
+		ret = IOS_Ioctl(HIDHandle, ResumeDevice, buf, 0x20, NULL, 0);
+		dbgprintf("HID:Suspend=%d\r\n", ret);
 		ret = IOS_Ioctl(HIDHandle, 2 /* Shutdown */, NULL, 0, NULL, 0);
 		dbgprintf("HID:Shutdown=%d\r\n", ret);
 		free(buf);
 	}
+	dbgprintf("HID:Closing\r\n");
 	IOS_Close(HIDHandle);
 	HIDHandle = -1;
+	dbgprintf("HID:Closed\r\n");
 }
 
 static u32 HIDAlarm()
