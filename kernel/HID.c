@@ -48,6 +48,8 @@ static const u8 ss_led_pattern[8] = {0x0, 0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x
 static s32 HIDHandle = -1;
 static u32 PS3LedSet = 0;
 static u32 XBOX360LedSet = 0;
+static vu32 XBOXReadResult = 0;
+static u32 XBOXReadLogCount = 0;
 static u32 ControllerID  = 0;
 static u32 KeyboardID  = 0;
 static u32 bEndpointAddressController = 0;
@@ -177,6 +179,7 @@ s32 HIDOpen( u32 LoaderRequest )
 		if(AttachedDevices[i].vid != 0)
 		{
 			u32 DeviceID = AttachedDevices[i].device_id;
+			dbgprintf("HID:Entry %u VID:%04X PID:%04X ID:%u\r\n", i, AttachedDevices[i].vid, AttachedDevices[i].pid, DeviceID );
 			if(DeviceID == ControllerID)
 			{
 				HIDControllerConnected = true;
@@ -337,6 +340,7 @@ s32 HIDOpen( u32 LoaderRequest )
 					wMaxPacketSize = 20; // descriptor says 32
 					MemPacketSize = wMaxPacketSize;
 					HIDXBOX360Init();
+#ifndef NO_8BITDO_INIT
 					if (is8BitDo)
 					{
 						// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
@@ -345,6 +349,7 @@ s32 HIDOpen( u32 LoaderRequest )
 							0x01, 0x0100, 0, NULL);
 						dbgprintf("HID:8BitDo init=%d\r\n", ret);
 					}
+#endif
 					RumbleEnabled = 1;
 					HIDXBOX360SetRumble( 0, 0, 0, 0 );
 				}
@@ -703,8 +708,12 @@ s32 HIDOpen( u32 LoaderRequest )
 		memset32((void*)HID_STATUS, 0, 0x20);
 		write32(HID_STATUS, 1);
 		sync_after_write((void*)HID_STATUS, 0x20);
+		XBOXReadLogCount = 0;
 		if(HID_CTRL->Polltype)
-			HIDInterruptMessage(0, Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+		{
+			s32 ret = HIDInterruptMessage(0, Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+			dbgprintf("HID:First read ep:%02X len:%u ret=%d\r\n", bEndpointAddressController, wMaxPacketSize, ret);
+		}
 		else
 		{
 			HIDControlMessage(0, Packet, SS_DATA_LEN, USB_REQTYPE_INTERFACE_GET,
@@ -740,7 +749,10 @@ static u32 HIDAlarm()
 		mqueue_recv(hidqueue, &msg, 0);
 		mqueue_ack(msg, 0);
 		if(msg == hidreadcontrollermsg)
+		{
+			XBOXReadResult = msg->result;
 			hidread = 1;
+		}
 		else if(msg == hidreadkeyboardmsg)
 			keyboardread = 1;
 		else if(msg == hidchangemsg)
@@ -938,6 +950,12 @@ long double mapIntervall(long double A, long double B, long double a, long doubl
 
 void HIDXBOX360Read()
 {
+	if (XBOXReadLogCount < 10 || ((s32)XBOXReadResult < 0 && XBOXReadLogCount < 30))
+	{
+		dbgprintf("HID:XBOX read ret=%d data:%02X %02X %02X %02X %02X\r\n", (s32)XBOXReadResult,
+			Packet[0], Packet[1], Packet[2], Packet[3], Packet[4]);
+		XBOXReadLogCount++;
+	}
 	if (Packet[1] == 0x14)
 	{
 		if (!XBOX360LedSet)
@@ -1240,6 +1258,8 @@ void HIDUpdateRegisters(u32 LoaderRequest)
 	{
 		if(hidchange == 1)
 		{
+			if(hidwaittimer == 0)
+				dbgprintf("HID:Device change\r\n");
 			hidattached = 0;
 			//wait half a second for devices to
 			//actually attach properly
