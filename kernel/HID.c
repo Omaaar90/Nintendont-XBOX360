@@ -61,6 +61,7 @@ static u8 *Packet = (u8*)NULL;
 static u32 RumbleType = 0;
 static u32 RumbleEnabled = 0;
 static u32 bEndpointAddressOut = 0;
+static u32 bEndpointAddressOut8BitDo = 0;
 static u32 invert_lx = 0;
 static u32 invert_ly = 0;
 static u32 invert_rx = 0;
@@ -247,6 +248,24 @@ s32 HIDOpen( u32 LoaderRequest )
 			// XInput (XBOX360 protocol) devices: wired XBOX360 and 8BitDo Ultimate 2.4G dongle
 			bool is8BitDo = (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
 			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e) || is8BitDo;
+			if (is8BitDo)
+			{
+				// 8BitDo: log all endpoints and remember the OUT endpoint (needed for the LED command)
+				u32 e, EpOffset = Offset;
+				bEndpointAddressOut8BitDo = 0;
+				for (e = 0; e < bNumEndpoints && e < 4; ++e)
+				{
+					u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+					u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
+					dbgprintf("HID:Endpoint %u addr:%02X attr:%02X size:%u interval:%u\r\n", e, EpAddress,
+						*(vu8*)(HIDHeap+EpOffset+3), *(vu16*)(HIDHeap+EpOffset+4), *(vu8*)(HIDHeap+EpOffset+6));
+					if ((EpAddress & 0x80) == 0 && bEndpointAddressOut8BitDo == 0)
+						bEndpointAddressOut8BitDo = EpAddress;
+					if (EpLength == 0)
+						break;
+					EpOffset += (EpLength+3)&(~3);
+				}
+			}
 			if (is8BitDo && bEndpointAddress != 0x81)
 			{
 				// 8BitDo: the 0x81 IN endpoint is not necessarily listed first
@@ -640,6 +659,9 @@ s32 HIDOpen( u32 LoaderRequest )
 					{
 						// EndpointOut reported to be 0, but it should be 1 or 2 => let's make this configurable
 						bEndpointAddressOut = ConfigGetValue( Data, "EndpointOut", 0 );
+						if (is8BitDo && bEndpointAddressOut != 0 && bEndpointAddressOut8BitDo != 0)
+							bEndpointAddressOut = bEndpointAddressOut8BitDo;
+						dbgprintf("HID:EndpointOut:%02X\r\n", bEndpointAddressOut);
 						invert_lx = ConfigGetValue( Data, "invert_lx", 0 );
 						invert_ly = ConfigGetValue( Data, "invert_ly", 0 );
 						invert_rx = ConfigGetValue( Data, "invert_rx", 0 );
@@ -717,6 +739,13 @@ s32 HIDOpen( u32 LoaderRequest )
 		if(HID_CTRL->Polltype)
 		{
 			s32 ret;
+			if (HIDRead == HIDXBOX360Read && HID_CTRL->VID == 0x2dc8)
+			{
+				// 8BitDo: like Linux xpad, set the player LED before reading; the pad may wait for it
+				XBOX360LedSet = 1;
+				HIDXBOX360SetLED(0);
+				dbgprintf("HID:8BitDo LED sent on ep:%02X\r\n", bEndpointAddressOut);
+			}
 			if (HIDRead == HIDXBOX360Read)
 				ret = HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
 			else
