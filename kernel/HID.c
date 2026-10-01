@@ -110,6 +110,7 @@ static vu32 hidread = 0, keyboardread = 0, hidchange = 0, hidattach = 0, hidatta
 static u32 HIDAlarm();
 static s32 HIDInterruptMessage(u32 isKBreq, u8 *Data, u32 Length, u32 Endpoint, s32 asyncqueue, struct ipcmessage *asyncmsg);
 static s32 HIDControlMessage(u32 isKBreq, u8 *Data, u32 Length, u32 RequestType, u32 Request, u32 Value, s32 asyncqueue, struct ipcmessage *asyncmsg);
+static s32 HIDInterruptBulkMessage(u8 *Data, u32 Length, u32 Endpoint, s32 asyncqueue, struct ipcmessage *asyncmsg);
 extern char __hid_stack_addr, __hid_stack_size;
 
 #define HID_STATUS 0x13003440
@@ -337,7 +338,9 @@ s32 HIDOpen( u32 LoaderRequest )
 				{
 					// NOTE: There are 4 endpoints_out, but only 0x81 is relevant
 					dbgprintf("HID:XBOX 360 Controller detected\r\n");
-					wMaxPacketSize = 20; // descriptor says 32
+					// 8BitDo: read the full descriptor size (32), a 20 byte read can overflow
+					if (!is8BitDo)
+						wMaxPacketSize = 20; // descriptor says 32
 					MemPacketSize = wMaxPacketSize;
 					HIDXBOX360Init();
 #ifndef NO_8BITDO_INIT
@@ -711,7 +714,11 @@ s32 HIDOpen( u32 LoaderRequest )
 		XBOXReadLogCount = 0;
 		if(HID_CTRL->Polltype)
 		{
-			s32 ret = HIDInterruptMessage(0, Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+			s32 ret;
+			if (HIDRead == HIDXBOX360Read)
+				ret = HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+			else
+				ret = HIDInterruptMessage(0, Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
 			dbgprintf("HID:First read ep:%02X len:%u ret=%d\r\n", bEndpointAddressController, wMaxPacketSize, ret);
 		}
 		else
