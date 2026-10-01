@@ -775,6 +775,23 @@ s32 HIDOpen( u32 LoaderRequest )
 
 void HIDClose()
 {
+	if (ControllerID != 0 && HID_CTRL->VID == 0x2dc8)
+	{
+		// 8BitDo: cancel the pending interrupt read and shut the USB host down cleanly,
+		// otherwise IOS can hang on exit while the dongle still has a transfer queued
+		s32 *buf = (s32*)malloca(0x20, 32);
+		memset32(buf, 0, 0x20);
+		buf[0] = ControllerID;
+		buf[2] = bEndpointAddressController;
+		s32 ret = IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
+		dbgprintf("HID:CancelEndpoint=%d\r\n", ret);
+		buf[2] = bEndpointAddressOut;
+		if (bEndpointAddressOut != 0)
+			IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
+		ret = IOS_Ioctl(HIDHandle, 2 /* Shutdown */, NULL, 0, NULL, 0);
+		dbgprintf("HID:Shutdown=%d\r\n", ret);
+		free(buf);
+	}
 	IOS_Close(HIDHandle);
 	HIDHandle = -1;
 }
