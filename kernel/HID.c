@@ -103,6 +103,14 @@ RumbleFunc HIDRumble = NULL;
 static usb_device_entry AttachedDevices[32] ALIGNED(32);
 
 static struct ipcmessage *hidreadcontrollermsg = NULL, *hidreadkeyboardmsg = NULL, *hidchangemsg = NULL, *hidattachmsg = NULL;
+// 8BitDo: LED/rumble/init are sent asynchronously, a synchronous transfer to a dongle
+// that just dropped off the bus can block the kernel main loop forever (exit hangs)
+static struct ipcmessage *hidoutmsg = NULL, *hidinitmsg = NULL;
+static u8 XBOXOutBuf[32] ALIGNED(32);
+static vu32 XBOXOutBusy = 0;
+static s32 XBOXRumblePending = -1;
+static u32 XBOXIs8BitDo = 0;
+static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length);
 static u32 HID_Thread = 0;
 static u32 HID_Timer = 0;
 static u8 *hidheap = NULL;
@@ -135,11 +143,13 @@ void HIDInit( void )
 	kbbuf = (u8*)malloca( 32,32 );
 
 	hidheap = (u8*)malloca(64,32);
-	hidqueue = mqueue_create(hidheap, 3);
+	hidqueue = mqueue_create(hidheap, 8);
 	hidreadcontrollermsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
 	hidreadkeyboardmsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
 	hidchangemsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
 	hidattachmsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
+	hidoutmsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
+	hidinitmsg = (struct ipcmessage*)malloca(sizeof(struct ipcmessage), 32);
 	HID_Thread = do_thread_create(HIDAlarm, ((u32*)&__hid_stack_addr), ((u32)(&__hid_stack_size)), 0x78);
 	thread_continue(HID_Thread);
 
@@ -370,12 +380,16 @@ s32 HIDOpen( u32 LoaderRequest )
 						// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
 						s32 ret = HIDControlMessage(0, ps3buf, 20,
 							(USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_VENDOR | USB_CTRLTYPE_REC_INTERFACE),
-							0x01, 0x0100, 0, NULL);
+							0x01, 0x0100, hidqueue, hidinitmsg);
 						dbgprintf("HID:8BitDo init=%d\r\n", ret);
 					}
 #endif
 					RumbleEnabled = 1;
-					HIDXBOX360SetRumble( 0, 0, 0, 0 );
+					XBOXIs8BitDo = is8BitDo;
+					XBOXOutBusy = 0;
+					XBOXRumblePending = -1;
+					if (!is8BitDo)
+						HIDXBOX360SetRumble( 0, 0, 0, 0 );
 				}
 				else if( DeviceVID == 0x057e && DevicePID == 0x0337 )
 					HIDGCInit();
@@ -770,6 +784,7 @@ s32 HIDOpen( u32 LoaderRequest )
 	else //(re)start reading
 		HIDInterruptMessage(1, kbbuf, 8, bEndpointAddressKeyboard, hidqueue, hidreadkeyboardmsg);
 	
+	dbgprintf("HIDOpen() done\r\n");
 	return 0;
 }
 
@@ -812,6 +827,10 @@ static u32 HIDAlarm()
 			keyboardread = 1;
 		else if(msg == hidchangemsg)
 			hidchange = 1;
+		else if(msg == hidoutmsg)
+			XBOXOutBusy = 0;
+		else if(msg == hidinitmsg)
+			;
 		else
 			hidattach = 1;
 	}
@@ -943,12 +962,28 @@ void HIDPS3SetLED( u8 led )
 	if( ret < 0 ) 
 		dbgprintf("ES:IOS_Ioctl():%d\r\n", ret );
 }
+static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length)
+{
+	if (XBOXOutBusy || bEndpointAddressOut == 0)
+		return -1;
+	memcpy(XBOXOutBuf, Data, Length);
+	XBOXOutBusy = 1;
+	s32 ret = HIDInterruptBulkMessage(XBOXOutBuf, Length, bEndpointAddressOut, hidqueue, hidoutmsg);
+	if (ret < 0)
+		XBOXOutBusy = 0;
+	return ret;
+}
 void HIDXBOX360SetLED(u8 led)
 {
 	if (bEndpointAddressOut == 0)
 		return;
 
 	u8 xbox_led_pattern[] = {0x01, 0x03, 0x06 + led};
+	if (XBOXIs8BitDo)
+	{
+		HIDXBOXOutAsync(xbox_led_pattern, sizeof(xbox_led_pattern));
+		return;
+	}
 	s32 ret = HIDInterruptBulkMessage(xbox_led_pattern, sizeof(xbox_led_pattern), bEndpointAddressOut, 0, NULL);
 	if (ret < 0)
 		dbgprintf("ES:HIDXBOX360SetLED IOS_Ioctl():%d\r\n", ret);
@@ -970,6 +1005,14 @@ void HIDXBOX360SetRumble(u8 duration_right, u8 power_right, u8 duration_left, u8
 		return;
 
 	u8 xbox_rumble_pattern[] = { 0x00, 0x08, 0x00, power_left, power_right, 0x00, 0x00, 0x00 };
+	if (XBOXIs8BitDo)
+	{
+		// remember the latest state, HIDXBOX360Read sends it once the OUT endpoint is free
+		XBOXRumblePending = (power_left << 8) | power_right;
+		if (HIDXBOXOutAsync(xbox_rumble_pattern, sizeof(xbox_rumble_pattern)) >= 0)
+			XBOXRumblePending = -1;
+		return;
+	}
 	s32 ret = HIDInterruptBulkMessage(xbox_rumble_pattern, sizeof(xbox_rumble_pattern), bEndpointAddressOut, 0, NULL);
 	if (ret < 0)
 		dbgprintf("ES:HIDXBOX360SetRumble IOS_Ioctl():%d\r\n", ret);
@@ -1005,6 +1048,8 @@ long double mapIntervall(long double A, long double B, long double a, long doubl
 
 void HIDXBOX360Read()
 {
+	if (XBOXIs8BitDo && XBOXRumblePending >= 0 && !XBOXOutBusy)
+		HIDXBOX360SetRumble(0, XBOXRumblePending & 0xFF, 0, XBOXRumblePending >> 8);
 	if (XBOXReadLogCount < 10 || ((s32)XBOXReadResult < 0 && XBOXReadLogCount < 30))
 	{
 		dbgprintf("HID:XBOX read ret=%d data:%02X %02X %02X %02X %02X\r\n", (s32)XBOXReadResult,
