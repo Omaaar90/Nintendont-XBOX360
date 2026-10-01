@@ -792,8 +792,8 @@ void HIDClose()
 {
 	if (ControllerID != 0 && HID_CTRL->VID == 0x2dc8)
 	{
-		// 8BitDo: cancel the pending interrupt read and shut the USB host down cleanly,
-		// otherwise IOS can hang on exit while the dongle still has a transfer queued
+#ifdef EXIT_CANCEL_ONLY
+		// 8BitDo: cancel the queued transfers but leave the dongle running
 		s32 *buf = (s32*)malloca(0x20, 32);
 		memset32(buf, 0, 0x20);
 		buf[0] = ControllerID;
@@ -803,15 +803,12 @@ void HIDClose()
 		buf[2] = bEndpointAddressOut;
 		if (bEndpointAddressOut != 0)
 			IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
-		// suspend the device like libogc USB_CloseDevice does
-		memset32(buf, 0, 0x20);
-		buf[0] = ControllerID;
-		buf[2] = 0;
-		ret = IOS_Ioctl(HIDHandle, ResumeDevice, buf, 0x20, NULL, 0);
-		dbgprintf("HID:Suspend=%d\r\n", ret);
-		ret = IOS_Ioctl(HIDHandle, 2 /* Shutdown */, NULL, 0, NULL, 0);
-		dbgprintf("HID:Shutdown=%d\r\n", ret);
 		free(buf);
+#else
+		// 8BitDo: with suspend + USB shutdown here the console hung on the
+		// IOS reload after exit, so close it like the original fork does
+		dbgprintf("HID:Plain close\r\n");
+#endif
 	}
 	dbgprintf("HID:Closing\r\n");
 	IOS_Close(HIDHandle);
