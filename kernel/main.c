@@ -540,13 +540,15 @@ int _main( int argc, char *argv[] )
 	if( ConfigGetConfig(NIN_CFG_MEMCARDEMU) )
 		EXIShutdown();
 
+#ifdef PATCHALL
+	dbgprintf("Exit:BT shutdown\r\n");
+	BTE_Shutdown();
+	dbgprintf("Exit:BT done\r\n");
+#endif
+
 	dbgprintf("Exit:closing log\r\n");
 	if (ConfigGetConfig(NIN_CFG_LOG))
 		closeLog();
-
-#ifdef PATCHALL
-	BTE_Shutdown();
-#endif
 
 	//unmount FAT device
 	f_mount(NULL, fatDevName, 1);
@@ -569,6 +571,21 @@ int _main( int argc, char *argv[] )
 		write32(0xd8006a0, ori_widesetting);
 		mask32(0xd8006a8, 0, 2);
 	}
+
+	//diagnostic: blink the disc slot light, then leave it on, so a
+	//freeze after this point is visibly past the kernel shutdown
+	set32(HW_GPIO_ENABLE, GPIO_SLOT_LED);
+	clear32(HW_GPIO_DIR, GPIO_SLOT_LED);
+	clear32(HW_GPIO_OWNER, GPIO_SLOT_LED);
+	u32 blink;
+	for (blink = 0; blink < 3; ++blink)
+	{
+		set32(HW_GPIO_OUT, GPIO_SLOT_LED);
+		mdelay(200);
+		clear32(HW_GPIO_OUT, GPIO_SLOT_LED);
+		mdelay(200);
+	}
+	set32(HW_GPIO_OUT, GPIO_SLOT_LED);
 WaitForExit:
 	/* Allow all IOS IRQs again */
 	write32(HW_IPC_ARMCTRL, 0x36);

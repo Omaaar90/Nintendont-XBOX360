@@ -9,6 +9,7 @@
 #include "btmemb.h"
 #include "physbusif.h"
 #include "../BT.h"
+#include "../debug.h"
 
 #define STACKSIZE						32768
 #define MQ_BOX_SIZE						256
@@ -359,9 +360,17 @@ void BTE_Shutdown()
 	hci_arg(&btstate);
 	hci_cmd_complete(__bte_shutdown_finished);
 	hci_reset();
-	__bte_waitcmdfinish(&btstate);
+	//don't wait forever on the reset, the exit would hang
+	u32 start = read32(HW_TIMER);
+	while(!btstate.hci_cmddone && TimerDiffTicks(start) < 3796875) //2 seconds
+	{
+		BTUpdateRegisters();
+		udelay(100);
+	}
+	dbgprintf("BT:Reset %s\r\n", btstate.hci_cmddone ? "done" : "timed out");
 
 	physbusif_shutdown();
+	dbgprintf("BT:USB closed\r\n");
 }
 
 s32 BTE_InitCore(btecallback cb)
