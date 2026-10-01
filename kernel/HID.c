@@ -229,6 +229,7 @@ s32 HIDOpen( u32 LoaderRequest )
 			u32 bInterfaceClass = *(vu8*)(HIDHeap+Offset+5);
 			u32 bInterfaceSubClass = *(vu8*)(HIDHeap+Offset+6);
 			u32 bInterfaceProtocol = *(vu8*)(HIDHeap+Offset+7);
+			u32 bNumEndpoints = *(vu8*)(HIDHeap+Offset+4);
 			dbgprintf("HID:bInterfaceClass:%02X\r\n", bInterfaceClass );
 			dbgprintf("HID:bInterfaceSubClass:%02X\r\n", bInterfaceSubClass );
 			dbgprintf("HID:bInterfaceProtocol:%02X\r\n", bInterfaceProtocol );
@@ -240,8 +241,26 @@ s32 HIDOpen( u32 LoaderRequest )
 			u32 bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
 
 			// XInput (XBOX360 protocol) devices: wired XBOX360 and 8BitDo Ultimate 2.4G dongle
-			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e) ||
-				(DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
+			bool is8BitDo = (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
+			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e) || is8BitDo;
+			if (is8BitDo && bEndpointAddress != 0x81)
+			{
+				// 8BitDo: the 0x81 IN endpoint is not necessarily listed first
+				u32 e, EpOffset = Offset;
+				for (e = 0; e < bNumEndpoints && e < 4; ++e)
+				{
+					u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+					if (*(vu8*)(HIDHeap+EpOffset+2) == 0x81)
+					{
+						Offset = EpOffset;
+						bEndpointAddress = 0x81;
+						break;
+					}
+					if (EpLength == 0)
+						break;
+					EpOffset += (EpLength+3)&(~3);
+				}
+			}
 			if (isXBOX && bEndpointAddress != 0x81)
 			{
 				// XBOX360: ignore irrelevant endpoints
@@ -318,6 +337,14 @@ s32 HIDOpen( u32 LoaderRequest )
 					wMaxPacketSize = 20; // descriptor says 32
 					MemPacketSize = wMaxPacketSize;
 					HIDXBOX360Init();
+					if (is8BitDo)
+					{
+						// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
+						s32 ret = HIDControlMessage(0, ps3buf, 20,
+							(USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_VENDOR | USB_CTRLTYPE_REC_INTERFACE),
+							0x01, 0x0100, 0, NULL);
+						dbgprintf("HID:8BitDo init=%d\r\n", ret);
+					}
 					RumbleEnabled = 1;
 					HIDXBOX360SetRumble( 0, 0, 0, 0 );
 				}
