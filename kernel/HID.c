@@ -239,7 +239,9 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			u32 bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
 
-			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e);
+			// XInput (XBOX360 protocol) devices: wired XBOX360 and 8BitDo Ultimate 2.4G dongle
+			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e) ||
+				(DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
 			if (isXBOX && bEndpointAddress != 0x81)
 			{
 				// XBOX360: ignore irrelevant endpoints
