@@ -342,7 +342,9 @@ s32 HIDOpen( u32 LoaderRequest )
 					if (!is8BitDo)
 						wMaxPacketSize = 20; // descriptor says 32
 					MemPacketSize = wMaxPacketSize;
-					HIDXBOX360Init();
+					// 8BitDo: skip SET_CONFIGURATION, the dongle already is configured and drops off the bus after it
+					if (!is8BitDo)
+						HIDXBOX360Init();
 #ifndef NO_8BITDO_INIT
 					if (is8BitDo)
 					{
