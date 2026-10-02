@@ -70,6 +70,44 @@ u32 drcAddress = 0;
 u32 drcAddressAligned = 0;
 bool isWiiVC = false;
 bool wiiVCInternal = false;
+// Experiment: the 8BitDo 2.4G dongle seems to hang the IOS reload after exit
+// once it has been used. Reset the external USB ports (OH0 root hub) so it
+// re-enumerates fresh, and give it time to settle before the reload.
+#define OH0_BASE 0x0D050000
+#define OHCI_RH_DESC_A 0x48
+#define OHCI_RH_PORT(n) (0x54 + (n) * 4)
+#define OHCI_PORT_CCS (1 << 0)
+#define OHCI_PORT_PRS (1 << 4)
+static void ResetUSBPorts(void)
+{
+	u32 rev = read32(OH0_BASE);
+	dbgprintf("Exit:OH0 rev %08X\r\n", rev);
+	if ((rev & 0xFF) != 0x10)
+		return; // not big endian OHCI 1.0, leave it alone
+	u32 ports = read32(OH0_BASE + OHCI_RH_DESC_A) & 0xFF;
+	if (ports > 4)
+		ports = 4;
+	u32 i, sec, reset = 0;
+	for (i = 0; i < ports; ++i)
+	{
+		u32 status = read32(OH0_BASE + OHCI_RH_PORT(i));
+		dbgprintf("Exit:port %u status %08X\r\n", i, status);
+		if (status & OHCI_PORT_CCS)
+		{
+			write32(OH0_BASE + OHCI_RH_PORT(i), OHCI_PORT_PRS);
+			reset = 1;
+		}
+	}
+	if (!reset)
+		return;
+	for (sec = 1; sec <= 3; ++sec)
+	{
+		mdelay(1000);
+		for (i = 0; i < ports; ++i)
+			dbgprintf("Exit:%us port %u status %08X\r\n", sec, i, read32(OH0_BASE + OHCI_RH_PORT(i)));
+	}
+}
+
 int _main( int argc, char *argv[] )
 {
 	//BSS is in DATA section so IOS doesnt touch it, we need to manually clear it
@@ -545,6 +583,8 @@ int _main( int argc, char *argv[] )
 	BTE_Shutdown();
 	dbgprintf("Exit:BT done\r\n");
 #endif
+
+	ResetUSBPorts();
 
 	dbgprintf("Exit:closing log\r\n");
 	if (ConfigGetConfig(NIN_CFG_LOG))
