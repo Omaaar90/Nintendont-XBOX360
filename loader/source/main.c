@@ -562,6 +562,11 @@ int main(int argc, char **argv)
 	CheckForGecko();
 	DCInvalidateRange(loader_stub, 0x1800);
 	memcpy(loader_stub, (void*)0x80001800, 0x1800);
+#ifdef EXIT_TO_SYSMENU
+	//test build: forget the Homebrew Channel return stub so a game exit
+	//boots the Wii Menu instead
+	memset(loader_stub, 0, 0x1800);
+#endif
 	RAMInit();
 	//tell devkitPPC r29 that we use UTF-8
 	setlocale(LC_ALL,"C.UTF-8");
