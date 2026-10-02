@@ -71,41 +71,78 @@ u32 drcAddressAligned = 0;
 bool isWiiVC = false;
 bool wiiVCInternal = false;
 // Experiment: the 8BitDo 2.4G dongle seems to hang the IOS reload after exit
-// once it has been used. Reset the external USB ports (OH0 root hub) so it
-// re-enumerates fresh, and give it time to settle before the reload.
-#define OH0_BASE 0x0D050000
-#define OHCI_RH_DESC_A 0x48
-#define OHCI_RH_PORT(n) (0x54 + (n) * 4)
-#define OHCI_PORT_CCS (1 << 0)
-#define OHCI_PORT_PRS (1 << 4)
+// once it has been used. Ask IOS to reset it (direct OHCI register access
+// crashes the kernel), then give it time to settle before the reload.
+#define USBV0_GETRHDESCA 15
+#define USBV0_GETRHPORTSTATUS 20
+#define USBV0_SETRHPORTSTATUS 25
+#define USBV0_RESETDEVICE 29
 static void ResetUSBPorts(void)
 {
-	u32 rev = read32(OH0_BASE);
-	dbgprintf("Exit:OH0 rev %08X\r\n", rev);
-	if ((rev & 0xFF) != 0x10)
-		return; // not big endian OHCI 1.0, leave it alone
-	u32 ports = read32(OH0_BASE + OHCI_RH_DESC_A) & 0xFF;
-	if (ports > 4)
-		ports = 4;
-	u32 i, sec, reset = 0;
-	for (i = 0; i < ports; ++i)
+	static const u32 pids[2] = { 0x3106, 0x3109 };
+	char *path = (char*)malloca(32, 32);
+	u32 *desca = (u32*)malloca(32, 32);
+	u8 *port = (u8*)malloca(32, 32);
+	u32 *status = (u32*)malloca(32, 32);
+	ioctlv *vec = (ioctlv*)malloca(32, 32);
+	s32 fd, ret;
+	u32 i, p, sec;
+	for (i = 0; i < 2; ++i)
 	{
-		u32 status = read32(OH0_BASE + OHCI_RH_PORT(i));
-		dbgprintf("Exit:port %u status %08X\r\n", i, status);
-		if (status & OHCI_PORT_CCS)
+		_sprintf(path, "/dev/usb/oh0/%x/%x", 0x2dc8, pids[i]);
+		fd = IOS_Open(path, 0);
+		dbgprintf("Exit:open %s=%d\r\n", path, fd);
+		if (fd < 0)
+			continue;
+		ret = IOS_Ioctl(fd, USBV0_RESETDEVICE, NULL, 0, NULL, 0);
+		dbgprintf("Exit:ResetDevice=%d\r\n", ret);
+		IOS_Close(fd);
+	}
+	_sprintf(path, "/dev/usb/oh0");
+	fd = IOS_Open(path, 0);
+	dbgprintf("Exit:open %s=%d\r\n", path, fd);
+	if (fd >= 0)
+	{
+		*desca = 0;
+		vec[0].data = desca;
+		vec[0].len = 4;
+		ret = IOS_Ioctlv(fd, USBV0_GETRHDESCA, 0, 1, vec);
+		dbgprintf("Exit:RhDescA=%d %08X\r\n", ret, *desca);
+		for (p = 0; p <= 2; ++p)
 		{
-			write32(OH0_BASE + OHCI_RH_PORT(i), OHCI_PORT_PRS);
-			reset = 1;
+			*port = p;
+			*status = 0;
+			vec[0].data = port;
+			vec[0].len = 1;
+			vec[1].data = status;
+			vec[1].len = 4;
+			ret = IOS_Ioctlv(fd, USBV0_GETRHPORTSTATUS, 1, 1, vec);
+			dbgprintf("Exit:port %u status=%d %08X\r\n", p, ret, *status);
+			if (ret >= 0 && (*status & 1))
+			{
+				*status = 1 << 4; // SetPortReset
+				ret = IOS_Ioctlv(fd, USBV0_SETRHPORTSTATUS, 2, 0, vec);
+				dbgprintf("Exit:port %u reset=%d\r\n", p, ret);
+			}
 		}
+		for (sec = 1; sec <= 3; ++sec)
+		{
+			mdelay(1000);
+			for (p = 0; p <= 2; ++p)
+			{
+				*port = p;
+				*status = 0;
+				ret = IOS_Ioctlv(fd, USBV0_GETRHPORTSTATUS, 1, 1, vec);
+				dbgprintf("Exit:%us port %u status=%d %08X\r\n", sec, p, ret, *status);
+			}
+		}
+		IOS_Close(fd);
 	}
-	if (!reset)
-		return;
-	for (sec = 1; sec <= 3; ++sec)
-	{
-		mdelay(1000);
-		for (i = 0; i < ports; ++i)
-			dbgprintf("Exit:%us port %u status %08X\r\n", sec, i, read32(OH0_BASE + OHCI_RH_PORT(i)));
-	}
+	free(vec);
+	free(status);
+	free(port);
+	free(desca);
+	free(path);
 }
 
 int _main( int argc, char *argv[] )
