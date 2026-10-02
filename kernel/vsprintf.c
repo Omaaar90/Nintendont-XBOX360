@@ -16,6 +16,11 @@
 static FIL dbgfile;
 static int file_opened = -1;
 vu32 SDisInit=0;
+// FatFs is not thread safe (_FS_REENTRANT 0) and the DI thread reads the game
+// from the same card, so log writes from the kernel main thread wait for it
+u32 KernelMainThread = 0;
+extern struct ipcmessage DI_CallbackMsg;
+extern u32 RealDiscCMD;
 
 extern int svc_write(char *buffer);
 
@@ -329,6 +334,11 @@ int dbgprintf( const char *fmt, ...)
 		}
 			
 		if (file_opened == FR_OK) {
+			if (RealDiscCMD == 0 && KernelMainThread != 0 && thread_get_id() == KernelMainThread)
+			{
+				while (*(vs32*)&DI_CallbackMsg.result != 0)
+					udelay(200);
+			}
 			f_lseek(&dbgfile, dbgfile.obj.objsize);
 			f_write(&dbgfile, buffer, strlen(buffer), &read);
 			f_sync(&dbgfile);

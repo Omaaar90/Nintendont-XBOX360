@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <stdlib.h>
 #include "ff_utf8.h"
+#include "DI.h"
 
 #ifndef DEBUG_HID
 #define dbgprintf(...)
@@ -428,6 +429,9 @@ s32 HIDOpen( u32 LoaderRequest )
 					FIL f;
 					u32 read;
 					char directory[28];
+					// in game the DI thread may be reading the game from the card right now,
+					// and FatFs is not thread safe, so let that read finish first
+					DIFinishAsync();
 					_sprintf(directory, "/controllers/%04X_%04X.ini", DeviceVID, DevicePID);
 					dbgprintf("Preferred controller.ini file: %s\r\n", directory);
 					

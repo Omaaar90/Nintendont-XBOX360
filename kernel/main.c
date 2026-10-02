@@ -59,6 +59,7 @@ extern u32 SI_IRQ;
 extern bool DI_IRQ, EXI_IRQ;
 extern u32 WaitForRealDisc;
 extern struct ipcmessage DI_CallbackMsg;
+extern u32 KernelMainThread;
 extern u32 DI_MessageQueue;
 extern vu32 DisableSIPatch;
 extern vu32 bbaEmuWanted;
@@ -151,6 +152,7 @@ int _main( int argc, char *argv[] )
 	//dbgprintf("memset32(%08x, 0, %08x)\n", &__bss_start, &__bss_end - &__bss_start);
 	memset32(&__bss_start, 0, &__bss_end - &__bss_start);
 	sync_after_write(&__bss_start, &__bss_end - &__bss_start);
+	KernelMainThread = thread_get_id();
 
 	//Important to do this as early as possible
 	if(read32(0x20109740) == 0xE59F1004)
