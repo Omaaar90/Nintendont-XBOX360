@@ -46,6 +46,32 @@ static u8 *kb_input = (u8*)0x13026C60;
 
 static const u8 ss_led_pattern[8] = {0x0, 0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18};
 
+static const char DefaultXBOXConfig[] =
+	"Polltype=1\r\n"
+	"DPAD=0\r\n"
+	"DigitalLR=0\r\n"
+	"A=3,20\r\n"
+	"B=3,10\r\n"
+	"X=3,80\r\n"
+	"Y=3,40\r\n"
+	"Z=3,02\r\n"
+	"S=2,10\r\n"
+	"Power=3,04\r\n"
+	"Up=2,01\r\n"
+	"Down=2,02\r\n"
+	"Left=2,04\r\n"
+	"Right=2,08\r\n"
+	"StickX=6\r\n"
+	"StickY=7\r\n"
+	"CStickX=8\r\n"
+	"CStickY=9\r\n"
+	"LAnalog=4\r\n"
+	"RAnalog=5\r\n"
+	"invert_lx=0\r\n"
+	"invert_ly=1\r\n"
+	"invert_rx=0\r\n"
+	"invert_ry=1\r\n";
+
 static s32 HIDHandle = -1;
 static u32 PS3LedSet = 0;
 static u32 XBOX360LedSet = 0;
@@ -62,7 +88,7 @@ static u8 *Packet = (u8*)NULL;
 static u32 RumbleType = 0;
 static u32 RumbleEnabled = 0;
 static u32 bEndpointAddressOut = 0;
-static u32 bEndpointAddressOut8BitDo = 0;
+static u32 bEndpointAddressOutAuto = 0;
 static u32 invert_lx = 0;
 static u32 invert_ly = 0;
 static u32 invert_rx = 0;
@@ -104,13 +130,11 @@ RumbleFunc HIDRumble = NULL;
 static usb_device_entry AttachedDevices[32] ALIGNED(32);
 
 static struct ipcmessage *hidreadcontrollermsg = NULL, *hidreadkeyboardmsg = NULL, *hidchangemsg = NULL, *hidattachmsg = NULL;
-// 8BitDo: LED/rumble/init are sent asynchronously, a synchronous transfer to a dongle
-// that just dropped off the bus can block the kernel main loop forever (exit hangs)
+// XInput: LED/rumble/init are sent asynchronously to avoid blocking the kernel
 static struct ipcmessage *hidoutmsg = NULL, *hidinitmsg = NULL;
 static u8 XBOXOutBuf[32] ALIGNED(32);
 static vu32 XBOXOutBusy = 0;
 static s32 XBOXRumblePending = -1;
-static u32 XBOXIs8BitDo = 0;
 static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length);
 static u32 HID_Thread = 0;
 static u32 HID_Timer = 0;
@@ -256,48 +280,51 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			u32 bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
 
-			// XInput (XBOX360 protocol) devices: wired XBOX360 and 8BitDo Ultimate 2.4G dongle
-			bool is8BitDo = (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
-			bool isXBOX = (DeviceVID == 0x045e && DevicePID == 0x028e) || is8BitDo;
-			if (is8BitDo)
+			// XInput devices: match USB vendor-specific class 0xFF, subclass 0x5D,
+			// or known standard XInput controller VID/PID fallbacks
+			bool isXBOX = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x5D)
+				|| (DeviceVID == 0x045e && DevicePID == 0x028e)
+				|| (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
+			if (isXBOX)
 			{
-				// 8BitDo: log all endpoints and remember the OUT endpoint (needed for the LED command)
+				// Scan all endpoints to discover the OUT endpoint and locate IN endpoint 0x81
 				u32 e, EpOffset = Offset;
-				bEndpointAddressOut8BitDo = 0;
+				bEndpointAddressOutAuto = 0;
 				for (e = 0; e < bNumEndpoints && e < 4; ++e)
 				{
 					u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
 					u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
 					dbgprintf("HID:Endpoint %u addr:%02X attr:%02X size:%u interval:%u\r\n", e, EpAddress,
 						*(vu8*)(HIDHeap+EpOffset+3), *(vu16*)(HIDHeap+EpOffset+4), *(vu8*)(HIDHeap+EpOffset+6));
-					if ((EpAddress & 0x80) == 0 && bEndpointAddressOut8BitDo == 0)
-						bEndpointAddressOut8BitDo = EpAddress;
+					if ((EpAddress & 0x80) == 0 && bEndpointAddressOutAuto == 0)
+						bEndpointAddressOutAuto = EpAddress;
 					if (EpLength == 0)
 						break;
 					EpOffset += (EpLength+3)&(~3);
 				}
-			}
-			if (is8BitDo && bEndpointAddress != 0x81)
-			{
-				// 8BitDo: the 0x81 IN endpoint is not necessarily listed first
-				u32 e, EpOffset = Offset;
-				for (e = 0; e < bNumEndpoints && e < 4; ++e)
+
+				if (bEndpointAddress != 0x81)
 				{
-					u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
-					if (*(vu8*)(HIDHeap+EpOffset+2) == 0x81)
+					// Locate the 0x81 IN endpoint if it wasn't the first endpoint listed
+					EpOffset = Offset;
+					for (e = 0; e < bNumEndpoints && e < 4; ++e)
 					{
-						Offset = EpOffset;
-						bEndpointAddress = 0x81;
-						break;
+						u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+						if (*(vu8*)(HIDHeap+EpOffset+2) == 0x81)
+						{
+							Offset = EpOffset;
+							bEndpointAddress = 0x81;
+							break;
+						}
+						if (EpLength == 0)
+							break;
+						EpOffset += (EpLength+3)&(~3);
 					}
-					if (EpLength == 0)
-						break;
-					EpOffset += (EpLength+3)&(~3);
 				}
 			}
 			if (isXBOX && bEndpointAddress != 0x81)
 			{
-				// XBOX360: ignore irrelevant endpoints
+				// XInput: ignore non-controller endpoints
 				dbgprintf("HID:bEndpointAddress:%02X skipped\r\n", bEndpointAddress );
 				continue;
 			}
@@ -367,30 +394,22 @@ s32 HIDOpen( u32 LoaderRequest )
 				else if( isXBOX && bEndpointAddress == 0x81)
 				{
 					// NOTE: There are 4 endpoints_out, but only 0x81 is relevant
-					dbgprintf("HID:XBOX 360 Controller detected\r\n");
-					// 8BitDo: read the full descriptor size (32), a 20 byte read can overflow
-					if (!is8BitDo)
-						wMaxPacketSize = 20; // descriptor says 32
-					MemPacketSize = wMaxPacketSize;
-					// 8BitDo: skip SET_CONFIGURATION, the dongle already is configured and drops off the bus after it
-					if (!is8BitDo)
+					dbgprintf("HID:XBOX Controller detected\r\n");
+					wMaxPacketSize = 32;
+					MemPacketSize = 32;
+					if (DeviceVID == 0x045e)
 						HIDXBOX360Init();
-#ifndef NO_8BITDO_INIT
-					if (is8BitDo)
+					else
 					{
 						// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
 						s32 ret = HIDControlMessage(0, ps3buf, 20,
 							(USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_VENDOR | USB_CTRLTYPE_REC_INTERFACE),
 							0x01, 0x0100, hidqueue, hidinitmsg);
-						dbgprintf("HID:8BitDo init=%d\r\n", ret);
+						dbgprintf("HID:XInput vendor init=%d\r\n", ret);
 					}
-#endif
 					RumbleEnabled = 1;
-					XBOXIs8BitDo = is8BitDo;
 					XBOXOutBusy = 0;
 					XBOXRumblePending = -1;
-					if (!is8BitDo)
-						HIDXBOX360SetRumble( 0, 0, 0, 0 );
 				}
 				else if( DeviceVID == 0x057e && DevicePID == 0x0337 )
 					HIDGCInit();
@@ -442,6 +461,8 @@ s32 HIDOpen( u32 LoaderRequest )
 						dbgprintf("%s was used\r\n", directory);
 					if(ret != FR_OK)
 						ret = f_open_char(&f, "/controller.ini.ini", FA_OPEN_EXISTING | FA_READ); // too many people don't read the instructions for windows
+					if(ret != FR_OK && isXBOX)
+						ret = f_open_char(&f, "/controllers/045E_028E.ini", FA_OPEN_EXISTING | FA_READ);
 					if(ret != FR_OK)
 						dbgprintf("HID:Failed to open config file:%u\r\n", ret );
 					else
@@ -460,12 +481,30 @@ s32 HIDOpen( u32 LoaderRequest )
 					HID_CTRL->VID = ConfigGetValue( Data, "VID", 0 );
 					HID_CTRL->PID = ConfigGetValue( Data, "PID", 0 );
 
-					if( DeviceVID != HID_CTRL->VID || DevicePID != HID_CTRL->PID )
+					if( (DeviceVID != HID_CTRL->VID || DevicePID != HID_CTRL->PID) &&
+					    !(isXBOX && HID_CTRL->VID == 0x045e && HID_CTRL->PID == 0x028e) )
 					{
 						dbgprintf("HID:Config does not match device VID/PID\r\n");
 						dbgprintf("HID:Config VID:%04X PID:%04X\r\n", HID_CTRL->VID, HID_CTRL->PID );
 						free(Data);
 						Data = NULL;
+					}
+					else if( isXBOX )
+					{
+						HID_CTRL->VID = DeviceVID;
+						HID_CTRL->PID = DevicePID;
+					}
+				}
+				if(Data == NULL && isXBOX)
+				{
+					dbgprintf("HID:Using Default XInput Configuration\r\n");
+					u32 cfglen = strlen(DefaultXBOXConfig);
+					Data = (char*)malloc(cfglen + 1);
+					if(Data)
+					{
+						memcpy(Data, DefaultXBOXConfig, cfglen + 1);
+						HID_CTRL->VID = DeviceVID;
+						HID_CTRL->PID = DevicePID;
 					}
 				}
 				if(Data == NULL)
@@ -675,11 +714,10 @@ s32 HIDOpen( u32 LoaderRequest )
 					
 					if (isXBOX)
 					{
-						// EndpointOut reported to be 0, but it should be 1 or 2 => let's make this configurable
 						bEndpointAddressOut = ConfigGetValue( Data, "EndpointOut", 0 );
-						if (is8BitDo && bEndpointAddressOut != 0 && bEndpointAddressOut8BitDo != 0)
-							bEndpointAddressOut = bEndpointAddressOut8BitDo;
-						dbgprintf("HID:EndpointOut:%02X\r\n", bEndpointAddressOut);
+						if (bEndpointAddressOut == 0 && bEndpointAddressOutAuto != 0)
+							bEndpointAddressOut = bEndpointAddressOutAuto;
+						dbgprintf("HID:EndpointOut:%02X (auto:%02X)\r\n", bEndpointAddressOut, bEndpointAddressOutAuto);
 						invert_lx = ConfigGetValue( Data, "invert_lx", 0 );
 						invert_ly = ConfigGetValue( Data, "invert_ly", 0 );
 						invert_rx = ConfigGetValue( Data, "invert_rx", 0 );
@@ -757,12 +795,12 @@ s32 HIDOpen( u32 LoaderRequest )
 		if(HID_CTRL->Polltype)
 		{
 			s32 ret;
-			if (HIDRead == HIDXBOX360Read && HID_CTRL->VID == 0x2dc8)
+			if (HIDRead == HIDXBOX360Read)
 			{
-				// 8BitDo: like Linux xpad, set the player LED before reading; the pad may wait for it
+				// Like Linux xpad, set player 1 LED before starting to read; pad may wait for it
 				XBOX360LedSet = 1;
 				HIDXBOX360SetLED(0);
-				dbgprintf("HID:8BitDo LED sent on ep:%02X\r\n", bEndpointAddressOut);
+				dbgprintf("HID:XBOX LED sent on ep:%02X\r\n", bEndpointAddressOut);
 			}
 			if (HIDRead == HIDXBOX360Read)
 				ret = HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
@@ -794,26 +832,6 @@ s32 HIDOpen( u32 LoaderRequest )
 
 void HIDClose()
 {
-	if (ControllerID != 0 && HID_CTRL->VID == 0x2dc8)
-	{
-#ifdef EXIT_CANCEL_ONLY
-		// 8BitDo: cancel the queued transfers but leave the dongle running
-		s32 *buf = (s32*)malloca(0x20, 32);
-		memset32(buf, 0, 0x20);
-		buf[0] = ControllerID;
-		buf[2] = bEndpointAddressController;
-		s32 ret = IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
-		dbgprintf("HID:CancelEndpoint=%d\r\n", ret);
-		buf[2] = bEndpointAddressOut;
-		if (bEndpointAddressOut != 0)
-			IOS_Ioctl(HIDHandle, 17 /* CancelEndpoint */, buf, 0x20, NULL, 0);
-		free(buf);
-#else
-		// 8BitDo: with suspend + USB shutdown here the console hung on the
-		// IOS reload after exit, so close it like the original fork does
-		dbgprintf("HID:Plain close\r\n");
-#endif
-	}
 	dbgprintf("HID:Closing\r\n");
 	IOS_Close(HIDHandle);
 	HIDHandle = -1;
@@ -988,14 +1006,7 @@ void HIDXBOX360SetLED(u8 led)
 		return;
 
 	u8 xbox_led_pattern[] = {0x01, 0x03, 0x06 + led};
-	if (XBOXIs8BitDo)
-	{
-		HIDXBOXOutAsync(xbox_led_pattern, sizeof(xbox_led_pattern));
-		return;
-	}
-	s32 ret = HIDInterruptBulkMessage(xbox_led_pattern, sizeof(xbox_led_pattern), bEndpointAddressOut, 0, NULL);
-	if (ret < 0)
-		dbgprintf("ES:HIDXBOX360SetLED IOS_Ioctl():%d\r\n", ret);
+	HIDXBOXOutAsync(xbox_led_pattern, sizeof(xbox_led_pattern));
 }
 void HIDPS3SetRumble( u8 duration_right, u8 power_right, u8 duration_left, u8 power_left)
 {
@@ -1004,7 +1015,7 @@ void HIDPS3SetRumble( u8 duration_right, u8 power_right, u8 duration_left, u8 po
 	sync_after_write(ps3buf, 64);
 
 	s32 ret = HIDInterruptMessage(0, ps3buf, sizeof(rawData), 0x02, 0, NULL);
-	if( ret < 0 )
+	if( ret < 0 ) 
 		dbgprintf("ES:IOS_Ioctl():%d\r\n", ret );
 }
 
@@ -1014,17 +1025,9 @@ void HIDXBOX360SetRumble(u8 duration_right, u8 power_right, u8 duration_left, u8
 		return;
 
 	u8 xbox_rumble_pattern[] = { 0x00, 0x08, 0x00, power_left, power_right, 0x00, 0x00, 0x00 };
-	if (XBOXIs8BitDo)
-	{
-		// remember the latest state, HIDXBOX360Read sends it once the OUT endpoint is free
-		XBOXRumblePending = (power_left << 8) | power_right;
-		if (HIDXBOXOutAsync(xbox_rumble_pattern, sizeof(xbox_rumble_pattern)) >= 0)
-			XBOXRumblePending = -1;
-		return;
-	}
-	s32 ret = HIDInterruptBulkMessage(xbox_rumble_pattern, sizeof(xbox_rumble_pattern), bEndpointAddressOut, 0, NULL);
-	if (ret < 0)
-		dbgprintf("ES:HIDXBOX360SetRumble IOS_Ioctl():%d\r\n", ret);
+	XBOXRumblePending = (power_left << 8) | power_right;
+	if (HIDXBOXOutAsync(xbox_rumble_pattern, sizeof(xbox_rumble_pattern)) >= 0)
+		XBOXRumblePending = -1;
 }
 
 vu32 HIDRumbleCurrent = 0, HIDRumbleLast = 0;
@@ -1057,7 +1060,7 @@ long double mapIntervall(long double A, long double B, long double a, long doubl
 
 void HIDXBOX360Read()
 {
-	if (XBOXIs8BitDo && XBOXRumblePending >= 0 && !XBOXOutBusy)
+	if (XBOXRumblePending >= 0 && !XBOXOutBusy)
 		HIDXBOX360SetRumble(0, XBOXRumblePending & 0xFF, 0, XBOXRumblePending >> 8);
 	if (XBOXReadLogCount < 10 || ((s32)XBOXReadResult < 0 && XBOXReadLogCount < 30))
 	{
