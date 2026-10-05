@@ -77,6 +77,9 @@ static u32 PS3LedSet = 0;
 static u32 XBOX360LedSet = 0;
 static vu32 XBOXReadResult = 0;
 static u32 XBOXReadLogCount = 0;
+static u32 isXBOnePad = 0;
+static u32 XBOneGuidePressed = 0;
+static u8  XBOneSeq = 0;
 static u32 ControllerID  = 0;
 static u32 KeyboardID  = 0;
 static u32 bEndpointAddressController = 0;
@@ -132,7 +135,7 @@ static usb_device_entry AttachedDevices[32] ALIGNED(32);
 static struct ipcmessage *hidreadcontrollermsg = NULL, *hidreadkeyboardmsg = NULL, *hidchangemsg = NULL, *hidattachmsg = NULL;
 // XInput: LED/rumble/init are sent asynchronously to avoid blocking the kernel
 static struct ipcmessage *hidoutmsg = NULL, *hidinitmsg = NULL;
-static u8 XBOXOutBuf[32] ALIGNED(32);
+static u8 XBOXOutBuf[64] ALIGNED(32);
 static vu32 XBOXOutBusy = 0;
 static s32 XBOXRumblePending = -1;
 static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length);
@@ -205,7 +208,7 @@ s32 HIDOpen( u32 LoaderRequest )
 	if (USB_HID)
 		length_heap = 0x60; // HID
 	else
-		length_heap = 0xC0; // VEN
+		length_heap = 0x400; // VEN (increased to 1024 bytes to support composite devices like Xbox One)
 
 	s32 *io_buffer = (s32*)malloca(0x20, 32);
 	u8 *HIDHeap = (u8*)malloca(length_heap,32);
@@ -280,15 +283,22 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			u32 bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
 
-			// XInput devices: match USB vendor-specific class 0xFF, subclass 0x5D, protocol 0x01
-			// (a wired pad; 0x81 is the wireless receiver, which uses another report format),
-			// or known standard XInput controller VID/PID fallbacks
-			bool isXBOX = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x5D && bInterfaceProtocol == 0x01)
+			// Match Xbox One (GIP: SubClass 0x47, Protocol 0xD0, or known Microsoft Xbox One/Series PIDs)
+			bool isXBOne = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x47 && bInterfaceProtocol == 0xD0)
+				|| (DeviceVID == 0x045e && (DevicePID == 0x02ea || DevicePID == 0x02d1 || DevicePID == 0x02dd
+				    || DevicePID == 0x02e3 || DevicePID == 0x0b00 || DevicePID == 0x0b0a || DevicePID == 0x0b12
+				    || DevicePID == 0x0b13 || DevicePID == 0x0b20 || DevicePID == 0x0b22));
+
+			// Match Xbox 360 (SubClass 0x5D, Protocol 0x01 wired, or known 360 / 8BitDo PIDs)
+			bool isXBOX360 = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x5D && bInterfaceProtocol == 0x01)
 				|| (DeviceVID == 0x045e && DevicePID == 0x028e)
 				|| (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
+
+			bool isXBOX = isXBOX360 || isXBOne;
+
 			if (isXBOX)
 			{
-				// Scan all endpoints to discover the OUT endpoint and locate IN endpoint 0x81
+				// Scan all endpoints to discover the OUT endpoint and locate IN endpoint
 				u32 e, EpOffset = Offset;
 				bEndpointAddressOutAuto = 0;
 				for (e = 0; e < bNumEndpoints && e < 4; ++e)
@@ -304,7 +314,26 @@ s32 HIDOpen( u32 LoaderRequest )
 					EpOffset += (EpLength+3)&(~3);
 				}
 
-				if (bEndpointAddress != 0x81)
+				if (isXBOne)
+				{
+					// Locate first IN endpoint for Xbox One
+					EpOffset = Offset;
+					for (e = 0; e < bNumEndpoints && e < 4; ++e)
+					{
+						u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+						u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
+						if ((EpAddress & 0x80) != 0)
+						{
+							Offset = EpOffset;
+							bEndpointAddress = EpAddress;
+							break;
+						}
+						if (EpLength == 0)
+							break;
+						EpOffset += (EpLength+3)&(~3);
+					}
+				}
+				else if (bEndpointAddress != 0x81)
 				{
 					// Locate the 0x81 IN endpoint if it wasn't the first endpoint listed
 					EpOffset = Offset;
@@ -323,10 +352,15 @@ s32 HIDOpen( u32 LoaderRequest )
 					}
 				}
 			}
-			if (isXBOX && bEndpointAddress != 0x81)
+			if (isXBOX360 && bEndpointAddress != 0x81)
 			{
-				// XInput: ignore non-controller endpoints
+				// XInput 360: ignore non-controller endpoints
 				dbgprintf("HID:bEndpointAddress:%02X skipped\r\n", bEndpointAddress );
+				continue;
+			}
+			if (isXBOne && (bEndpointAddress & 0x80) == 0)
+			{
+				dbgprintf("HID:XBOne invalid IN endpoint:%02X\r\n", bEndpointAddress );
 				continue;
 			}
 
@@ -392,25 +426,37 @@ s32 HIDOpen( u32 LoaderRequest )
 					RumbleEnabled = 1;
 					HIDPS3SetRumble( 0, 0, 0, 0 );
 				}
-				else if( isXBOX && bEndpointAddress == 0x81)
+				else if( isXBOX )
 				{
-					// NOTE: There are 4 endpoints_out, but only 0x81 is relevant
-					dbgprintf("HID:XBOX Controller detected\r\n");
-					wMaxPacketSize = 32;
-					MemPacketSize = 32;
-					if (DeviceVID == 0x045e)
-						HIDXBOX360Init();
+					dbgprintf("HID:%s Controller detected\r\n", isXBOne ? "Xbox One" : "XBOX 360");
+					if (isXBOne)
+					{
+						if (wMaxPacketSize < 64)
+							wMaxPacketSize = 64;
+						MemPacketSize = 64;
+						isXBOnePad = 1;
+					}
 					else
 					{
-						// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
-						s32 ret = HIDControlMessage(0, ps3buf, 20,
-							(USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_VENDOR | USB_CTRLTYPE_REC_INTERFACE),
-							0x01, 0x0100, hidqueue, hidinitmsg);
-						dbgprintf("HID:XInput vendor init=%d\r\n", ret);
+						wMaxPacketSize = 32;
+						MemPacketSize = 32;
+						isXBOnePad = 0;
+						if (DeviceVID == 0x045e)
+							HIDXBOX360Init();
+						else
+						{
+							// Third-party XInput pads need this vendor request before they send input (see Linux xpad)
+							s32 ret = HIDControlMessage(0, ps3buf, 20,
+								(USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_VENDOR | USB_CTRLTYPE_REC_INTERFACE),
+								0x01, 0x0100, hidqueue, hidinitmsg);
+							dbgprintf("HID:XInput vendor init=%d\r\n", ret);
+						}
 					}
 					RumbleEnabled = 1;
 					XBOXOutBusy = 0;
 					XBOXRumblePending = -1;
+					XBOneGuidePressed = 0;
+					XBOneSeq = 0;
 				}
 				else if( DeviceVID == 0x057e && DevicePID == 0x0337 )
 					HIDGCInit();
@@ -800,10 +846,18 @@ s32 HIDOpen( u32 LoaderRequest )
 			s32 ret;
 			if (HIDRead == HIDXBOX360Read)
 			{
-				// Like Linux xpad, set player 1 LED before starting to read; pad may wait for it
-				XBOX360LedSet = 1;
-				HIDXBOX360SetLED(0);
-				dbgprintf("HID:XBOX LED sent on ep:%02X\r\n", bEndpointAddressOut);
+				if (isXBOnePad)
+				{
+					HIDXBOXOneInit(DeviceVID, DevicePID);
+					XBOX360LedSet = 1;
+				}
+				else
+				{
+					// Like Linux xpad, set player 1 LED before starting to read; pad may wait for it
+					XBOX360LedSet = 1;
+					HIDXBOX360SetLED(0);
+					dbgprintf("HID:XBOX LED sent on ep:%02X\r\n", bEndpointAddressOut);
+				}
 			}
 			if (HIDRead == HIDXBOX360Read)
 				ret = HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
@@ -1003,6 +1057,45 @@ static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length)
 		XBOXOutBusy = 0;
 	return ret;
 }
+
+static void HIDXBOXOneSendInitPkt(const u8 *data, u32 len)
+{
+	if (bEndpointAddressOut == 0)
+		return;
+	memcpy(XBOXOutBuf, data, len);
+	XBOXOutBuf[2] = XBOneSeq++;
+	s32 ret = HIDInterruptBulkMessage(XBOXOutBuf, len, bEndpointAddressOut, 0, NULL);
+	dbgprintf("HID:XBOne init pkt[%02X] ret=%d\r\n", data[0], ret);
+	mdelay(10);
+}
+
+static void HIDXBOXOneInit(u32 vid, u32 pid)
+{
+	if (bEndpointAddressOut == 0)
+		return;
+
+	dbgprintf("HID:Initializing Xbox One pad (VID:%04X PID:%04X)\r\n", vid, pid);
+
+	// 1. Power on
+	static const u8 power_on[] = { 0x05, 0x20, 0x00, 0x01, 0x00 };
+	HIDXBOXOneSendInitPkt(power_on, sizeof(power_on));
+
+	// 2. Xbox One S / Elite 2 wake packet (needed if previously paired via Bluetooth)
+	if (vid == 0x045E && (pid == 0x02EA || pid == 0x0B00))
+	{
+		static const u8 s_init[] = { 0x05, 0x20, 0x00, 0x0F, 0x06 };
+		HIDXBOXOneSendInitPkt(s_init, sizeof(s_init));
+	}
+
+	// 3. LED On (turns Guide LED solid white)
+	static const u8 led_on[] = { 0x0A, 0x20, 0x00, 0x03, 0x00, 0x01, 0x14 };
+	HIDXBOXOneSendInitPkt(led_on, sizeof(led_on));
+
+	// 4. Auth Done
+	static const u8 auth_done[] = { 0x06, 0x20, 0x00, 0x02, 0x01, 0x00 };
+	HIDXBOXOneSendInitPkt(auth_done, sizeof(auth_done));
+}
+
 void HIDXBOX360SetLED(u8 led)
 {
 	if (bEndpointAddressOut == 0)
@@ -1027,10 +1120,30 @@ void HIDXBOX360SetRumble(u8 duration_right, u8 power_right, u8 duration_left, u8
 	if (bEndpointAddressOut == 0)
 		return;
 
-	u8 xbox_rumble_pattern[] = { 0x00, 0x08, 0x00, power_left, power_right, 0x00, 0x00, 0x00 };
-	XBOXRumblePending = (power_left << 8) | power_right;
-	if (HIDXBOXOutAsync(xbox_rumble_pattern, sizeof(xbox_rumble_pattern)) >= 0)
-		XBOXRumblePending = -1;
+	if (isXBOnePad)
+	{
+		u8 p_left = (power_left > 0 && power_left < 3) ? 35 : ((u32)power_left * 100) / 255;
+		u8 p_right = (power_right > 0 && power_right < 3) ? 35 : ((u32)power_right * 100) / 255;
+		u8 xbone_rumble[13] = {
+			0x09, 0x00, XBOneSeq++, 0x09, 0x00,
+			0x0F, /* all 4 motors */
+			0x00, 0x00, /* trigger motors */
+			p_left, p_right, /* main grip motors */
+			(p_left || p_right) ? 0xFF : 0x00, /* on period */
+			0x00, /* off period */
+			(p_left || p_right) ? 0xFF : 0x00  /* repeat count */
+		};
+		XBOXRumblePending = (power_left << 8) | power_right;
+		if (HIDXBOXOutAsync(xbone_rumble, sizeof(xbone_rumble)) >= 0)
+			XBOXRumblePending = -1;
+	}
+	else
+	{
+		u8 xbox_rumble_pattern[] = { 0x00, 0x08, 0x00, power_left, power_right, 0x00, 0x00, 0x00 };
+		XBOXRumblePending = (power_left << 8) | power_right;
+		if (HIDXBOXOutAsync(xbox_rumble_pattern, sizeof(xbox_rumble_pattern)) >= 0)
+			XBOXRumblePending = -1;
+	}
 }
 
 vu32 HIDRumbleCurrent = 0, HIDRumbleLast = 0;
@@ -1071,9 +1184,70 @@ void HIDXBOX360Read()
 			Packet[0], Packet[1], Packet[2], Packet[3], Packet[4]);
 		XBOXReadLogCount++;
 	}
+	if (isXBOnePad)
+	{
+		if (Packet[0] == 0x07) // GIP_CMD_VIRTUAL_KEY (Guide button)
+		{
+			XBOneGuidePressed = (Packet[4] & 0x01) ? 1 : 0;
+			if (Packet[1] == 0x30 && bEndpointAddressOut != 0)
+			{
+				u8 mode_ack[13] = {
+					0x01, 0x20, Packet[2], 0x09, 0x00,
+					0x07, 0x20, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00
+				};
+				HIDXBOXOutAsync(mode_ack, sizeof(mode_ack));
+			}
+			HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+			return;
+		}
+		else if (Packet[0] == 0x20) // GIP_CMD_INPUT
+		{
+			u8 d4 = Packet[4];
+			u8 d5 = Packet[5];
+			u16 lt = Packet[6] | (Packet[7] << 8);
+			u16 rt = Packet[8] | (Packet[9] << 8);
+			u8 lx_l = Packet[10], lx_h = Packet[11];
+			u8 ly_l = Packet[12], ly_h = Packet[13];
+			u8 rx_l = Packet[14], rx_h = Packet[15];
+			u8 ry_l = Packet[16], ry_h = Packet[17];
+
+			Packet[0] = 0x00;
+			Packet[1] = 0x14; // Standard 360 report length (20 bytes)
+
+			// Byte 2: D-pad, Start, Back, LS, RS
+			u8 b2 = (d5 & 0xCF); // Up(0x1), Down(0x2), Left(0x4), Right(0x8), LS(0x40), RS(0x80)
+			if (d4 & 0x04) b2 |= 0x10; // Start
+			if (d4 & 0x08) b2 |= 0x20; // Back
+			Packet[2] = b2;
+
+			// Byte 3: LB, RB, Guide, A, B, X, Y
+			u8 b3 = (d4 & 0xF0); // A(0x10), B(0x20), X(0x40), Y(0x80)
+			if (d5 & 0x10) b3 |= 0x01; // LB
+			if (d5 & 0x20) b3 |= 0x02; // RB
+			if (XBOneGuidePressed) b3 |= 0x04; // Guide
+			Packet[3] = b3;
+
+			// Bytes 4 & 5: Triggers (10-bit [0..1023] scaled to 8-bit [0..255])
+			Packet[4] = (u8)(lt >> 2);
+			Packet[5] = (u8)(rt >> 2);
+
+			// Bytes 6..13: Sticks (signed 16-bit little-endian)
+			Packet[6] = lx_l; Packet[7] = lx_h;
+			Packet[8] = ly_l; Packet[9] = ly_h;
+			Packet[10] = rx_l; Packet[11] = rx_h;
+			Packet[12] = ry_l; Packet[13] = ry_h;
+		}
+		else
+		{
+			// Non-input packet (e.g. announce, firmware status), re-arm read without touching HID_Packet
+			HIDInterruptBulkMessage(Packet, wMaxPacketSize, bEndpointAddressController, hidqueue, hidreadcontrollermsg);
+			return;
+		}
+	}
+
 	if (Packet[1] == 0x14)
 	{
-		if (!XBOX360LedSet)
+		if (!XBOX360LedSet && !isXBOnePad)
 		{
 			HIDXBOX360SetLED(0);
 			XBOX360LedSet = 1;
