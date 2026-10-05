@@ -71,6 +71,18 @@ u32 drcAddress = 0;
 u32 drcAddressAligned = 0;
 bool isWiiVC = false;
 bool wiiVCInternal = false;
+
+static void mdelay_service_hid( u32 ms )
+{
+	u32 start = read32(HW_TIMER);
+	u32 ticks = ms * 1898;
+	while(TimerDiffTicks(start) < ticks)
+	{
+		HIDUpdateRegisters(0);
+		udelay(200);
+	}
+}
+
 int _main( int argc, char *argv[] )
 {
 	//BSS is in DATA section so IOS doesnt touch it, we need to manually clear it
@@ -184,6 +196,7 @@ int _main( int argc, char *argv[] )
 		mdelay(4000);
 		Shutdown();
 	}
+	HIDUpdateRegisters(0);
 	
 	BootStatus(4, 0, 0);
 
@@ -221,6 +234,7 @@ int _main( int argc, char *argv[] )
 	if (ConfigGetConfig(NIN_CFG_LOG))
 		SDisInit = 1;  // Looks okay after threading fix
 	dbgprintf("Game path: %s\r\n", ConfigGetGamePath());
+	HIDUpdateRegisters(0);
 
 	BootStatus(8, s_size, s_cnt);
 
@@ -242,6 +256,7 @@ int _main( int argc, char *argv[] )
 	thread_continue(DI_Thread);
 
 	DIinit(true);
+	HIDUpdateRegisters(0);
 
 	BootStatus(10, s_size, s_cnt);
 
@@ -257,11 +272,12 @@ int _main( int argc, char *argv[] )
 	PatchInit();
 
 	SOCKInit();
+	HIDUpdateRegisters(0);
 //Tell PPC side we are ready!
 	cc_ahbMemFlush(1);
-	mdelay(1000);
+	mdelay_service_hid(1000);
 	BootStatus(0xdeadbeef, s_size, s_cnt);
-	mdelay(1000); //wait before hw flag changes
+	mdelay_service_hid(1000); //wait before hw flag changes
 	dbgprintf("Kernel Start\r\n");
 #ifdef USE_OSREPORTDM
 	write32( 0x1860, 0xdeadbeef );	// Clear OSReport area

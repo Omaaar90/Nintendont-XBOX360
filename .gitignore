@@ -10,3 +10,6 @@ loader/data/kernel.zip
 nintendont/boot.dol
 fatfs/*.a
 codehandler/*.h
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
