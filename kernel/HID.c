@@ -280,9 +280,10 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			u32 bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
 
-			// XInput devices: match USB vendor-specific class 0xFF, subclass 0x5D,
+			// XInput devices: match USB vendor-specific class 0xFF, subclass 0x5D, protocol 0x01
+			// (a wired pad; 0x81 is the wireless receiver, which uses another report format),
 			// or known standard XInput controller VID/PID fallbacks
-			bool isXBOX = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x5D)
+			bool isXBOX = (bInterfaceClass == 0xFF && bInterfaceSubClass == 0x5D && bInterfaceProtocol == 0x01)
 				|| (DeviceVID == 0x045e && DevicePID == 0x028e)
 				|| (DeviceVID == 0x2dc8 && (DevicePID == 0x3106 || DevicePID == 0x3109));
 			if (isXBOX)
@@ -714,8 +715,10 @@ s32 HIDOpen( u32 LoaderRequest )
 					
 					if (isXBOX)
 					{
+						// the descriptor knows the OUT endpoint, the ini value is only a fallback
+						// (the shared 045E_028E.ini says 1, the 8BitDo dongle uses 2)
 						bEndpointAddressOut = ConfigGetValue( Data, "EndpointOut", 0 );
-						if (bEndpointAddressOut == 0 && bEndpointAddressOutAuto != 0)
+						if (bEndpointAddressOutAuto != 0)
 							bEndpointAddressOut = bEndpointAddressOutAuto;
 						dbgprintf("HID:EndpointOut:%02X (auto:%02X)\r\n", bEndpointAddressOut, bEndpointAddressOutAuto);
 						invert_lx = ConfigGetValue( Data, "invert_lx", 0 );
