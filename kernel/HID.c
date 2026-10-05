@@ -139,6 +139,7 @@ static u8 XBOXOutBuf[64] ALIGNED(32);
 static vu32 XBOXOutBusy = 0;
 static s32 XBOXRumblePending = -1;
 static s32 HIDXBOXOutAsync(const u8 *Data, u32 Length);
+static void HIDXBOXOneInit(u32 vid, u32 pid);
 static u32 HID_Thread = 0;
 static u32 HID_Timer = 0;
 static u8 *hidheap = NULL;
@@ -208,10 +209,13 @@ s32 HIDOpen( u32 LoaderRequest )
 	if (USB_HID)
 		length_heap = 0x60; // HID
 	else
-		length_heap = 0x400; // VEN (increased to 1024 bytes to support composite devices like Xbox One)
+		length_heap = 0xC0; // VEN, the size libogc uses
 
+	// composite devices such as the Xbox One S pad fail GetDeviceParameters with
+	// -4 at 0xC0, so the buffer has room for a retry with a larger size
+	const s32 length_heap_big = 0x400;
 	s32 *io_buffer = (s32*)malloca(0x20, 32);
-	u8 *HIDHeap = (u8*)malloca(length_heap,32);
+	u8 *HIDHeap = (u8*)malloca(USB_HID ? length_heap : length_heap_big, 32);
 	u32 i;
 	u32 DeviceVID = 0, DevicePID = 0;
 	for(i = 0; i < 32; ++i)
@@ -249,6 +253,15 @@ s32 HIDOpen( u32 LoaderRequest )
 			io_buffer[0] = DeviceID;
 			io_buffer[2] = 0;
 			res = IOS_Ioctl(HIDHandle, GetDeviceParameters, io_buffer, 0x20, HIDHeap, length_heap);
+			if( res < 0 && !USB_HID )
+			{
+				dbgprintf("GetDeviceParameters error=%d, retrying with 0x%X bytes\r\n", res, length_heap_big );
+				memset32(HIDHeap, 0, length_heap_big);
+				memset32(io_buffer, 0, 0x20);
+				io_buffer[0] = DeviceID;
+				io_buffer[2] = 0;
+				res = IOS_Ioctl(HIDHandle, GetDeviceParameters, io_buffer, 0x20, HIDHeap, length_heap_big);
+			}
 			if( res < 0 )
 				dbgprintf("GetDeviceParameters error=%d\r\n", res );
 
