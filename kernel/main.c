@@ -119,6 +119,10 @@ int _main( int argc, char *argv[] )
 
 	thread_set_priority( 0, 0x50 );
 
+	//Clear the shared HID controller config once at boot, before the first HIDOpen
+	//(not after the game is selected, that would wipe a controller set up in the loader)
+	memset32((void*)0x13005000, 0, sizeof(controller));
+	sync_after_write((void*)0x13005000, sizeof(controller));
 	//Early HID for loader
 	HIDInit();
 
@@ -248,9 +252,6 @@ int _main( int argc, char *argv[] )
 
 	memset32((void*)0x13026500, 0, 0x100);
 	sync_after_write((void*)0x13026500, 0x100);
-
-	memset32((void*)0x13005000, 0, sizeof(controller));
-	sync_after_write((void*)0x13005000, sizeof(controller));
 
 	BootStatus(9, s_size, s_cnt);
 
