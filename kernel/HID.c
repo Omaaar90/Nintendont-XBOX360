@@ -897,10 +897,13 @@ s32 HIDOpen( u32 LoaderRequest )
 				}
 				else
 				{
-					// Like Linux xpad, set player 1 LED before starting to read; pad may wait for it
 					XBOX360LedSet = 1;
-					HIDXBOX360SetLED(0);
-					dbgprintf("HID:XBOX LED sent on ep:%02X\r\n", bEndpointAddressOut);
+					if (DeviceVID == 0x045e)
+					{
+						// Like Linux xpad, set player 1 LED before starting to read; pad may wait for it
+						HIDXBOX360SetLED(0);
+						dbgprintf("HID:XBOX LED sent on ep:%02X\r\n", bEndpointAddressOut);
+					}
 				}
 			}
 			if (HIDRead == HIDXBOX360Read)
