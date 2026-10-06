@@ -223,7 +223,9 @@ s32 HIDOpen( u32 LoaderRequest )
 		if(AttachedDevices[i].vid != 0)
 		{
 			u32 DeviceID = AttachedDevices[i].device_id;
-			dbgprintf("HID:Entry %u VID:%04X PID:%04X ID:%u\r\n", i, AttachedDevices[i].vid, AttachedDevices[i].pid, DeviceID );
+			u8 intf_num = ((u8*)&AttachedDevices[i])[10];
+			dbgprintf("HID:Entry %u VID:%04X PID:%04X ID:%u intf:%u token:%08X\r\n",
+				i, AttachedDevices[i].vid, AttachedDevices[i].pid, DeviceID, intf_num, AttachedDevices[i].token );
 			if(DeviceID == ControllerID || HIDControllerConnected)
 			{
 				HIDControllerConnected = true;
@@ -238,6 +240,16 @@ s32 HIDOpen( u32 LoaderRequest )
 			}
 			DeviceVID = AttachedDevices[i].vid;
 			DevicePID = AttachedDevices[i].pid;
+
+			// If this is an Xbox One controller, only interface 0 carries gamepad data (interfaces 1 and 2 are audio)
+			bool isXBOneVidPid = (DeviceVID == 0x045e && (DevicePID == 0x02ea || DevicePID == 0x02d1 || DevicePID == 0x02dd
+				|| DevicePID == 0x02e3 || DevicePID == 0x0b00 || DevicePID == 0x0b0a || DevicePID == 0x0b12
+				|| DevicePID == 0x0b13 || DevicePID == 0x0b20 || DevicePID == 0x0b22));
+			if (isXBOneVidPid && intf_num != 0)
+			{
+				dbgprintf("HID:XBOne skipping non-gamepad intf:%u\r\n", intf_num );
+				continue;
+			}
 
 			dbgprintf("HID:DeviceID:%u\r\n", DeviceID );
 			dbgprintf("HID:VID:%04X PID:%04X\r\n", DeviceVID, DevicePID );
@@ -1094,11 +1106,18 @@ static void HIDXBOXOneSendInitPkt(const u8 *data, u32 len)
 {
 	if (bEndpointAddressOut == 0)
 		return;
-	memcpy(XBOXOutBuf, data, len);
-	XBOXOutBuf[2] = XBOneSeq++;
-	s32 ret = HIDInterruptBulkMessage(XBOXOutBuf, len, bEndpointAddressOut, 0, NULL);
+	u32 timeout = 20;
+	while (XBOXOutBusy && timeout > 0)
+	{
+		mdelay(5);
+		timeout--;
+	}
+	u8 pkt[64];
+	memcpy(pkt, data, len);
+	pkt[2] = XBOneSeq++;
+	s32 ret = HIDXBOXOutAsync(pkt, len);
 	dbgprintf("HID:XBOne init pkt[%02X] ret=%d\r\n", data[0], ret);
-	mdelay(10);
+	mdelay(15);
 }
 
 static void HIDXBOXOneInit(u32 vid, u32 pid)
