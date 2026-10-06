@@ -275,6 +275,27 @@ s32 HIDOpen( u32 LoaderRequest )
 				io_buffer[0] = DeviceID;
 				io_buffer[2] = 0;
 				res = IOS_Ioctl(HIDHandle, GetDeviceParameters, io_buffer, 0x20, HIDHeap, length_heap_big);
+
+				if (res < 0)
+				{
+					// For composite devices, IOS58 often rejects GetDeviceParameters on sub-interfaces.
+					// We must find the base interface (or any that succeeds) and query it instead.
+					u32 j;
+					for (j = 0; j < 32; ++j)
+					{
+						if (AttachedDevices[j].vid == DeviceVID && AttachedDevices[j].pid == DevicePID && AttachedDevices[j].device_id != DeviceID)
+						{
+							memset32(HIDHeap, 0, length_heap_big);
+							io_buffer[0] = AttachedDevices[j].device_id;
+							res = IOS_Ioctl(HIDHandle, GetDeviceParameters, io_buffer, 0x20, HIDHeap, length_heap_big);
+							if (res >= 0)
+							{
+								dbgprintf("HID:Got descriptors from related interface ID:%u\r\n", AttachedDevices[j].device_id);
+								break;
+							}
+						}
+					}
+				}
 			}
 			if( res < 0 )
 				dbgprintf("GetDeviceParameters error=%d\r\n", res );
@@ -293,6 +314,21 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			u32 ConfigurationLength = *(vu8*)(HIDHeap+Offset);
 			Offset += (ConfigurationLength+3)&(~3);
+
+			// Loop to find the correct Interface Descriptor matching intf_num
+			u32 desc_idx, max_desc = 32;
+			for (desc_idx = 0; desc_idx < max_desc; ++desc_idx)
+			{
+				u32 desc_len = *(vu8*)(HIDHeap+Offset);
+				u32 desc_type = *(vu8*)(HIDHeap+Offset+1);
+				if (desc_len == 0) break;
+				if (desc_type == 4) // Interface Descriptor
+				{
+					if (*(vu8*)(HIDHeap+Offset+2) == intf_num)
+						break;
+				}
+				Offset += (desc_len+3)&(~3);
+			}
 
 			u32 InterfaceDescLength = *(vu8*)(HIDHeap+Offset);
 
