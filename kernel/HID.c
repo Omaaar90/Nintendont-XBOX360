@@ -224,9 +224,11 @@ s32 HIDOpen( u32 LoaderRequest )
 		{
 			u32 DeviceID = AttachedDevices[i].device_id;
 			dbgprintf("HID:Entry %u VID:%04X PID:%04X ID:%u\r\n", i, AttachedDevices[i].vid, AttachedDevices[i].pid, DeviceID );
-			if(DeviceID == ControllerID)
+			if(DeviceID == ControllerID || HIDControllerConnected)
 			{
 				HIDControllerConnected = true;
+				if(DeviceID == KeyboardID)
+					HIDKeyboardConnected = true;
 				continue;
 			}
 			if(DeviceID == KeyboardID)
@@ -309,81 +311,95 @@ s32 HIDOpen( u32 LoaderRequest )
 
 			bool isXBOX = isXBOX360 || isXBOne;
 
-			if (isXBOX)
+			if (res < 0 && isXBOne)
 			{
-				// Scan all endpoints to discover the OUT endpoint and locate IN endpoint
-				u32 e, EpOffset = Offset;
-				bEndpointAddressOutAuto = 0;
-				for (e = 0; e < bNumEndpoints && e < 4; ++e)
+				dbgprintf("HID:Xbox One using fallback endpoints (IN:81 OUT:01 size:64)\r\n");
+				bInterfaceClass = 0xFF;
+				bInterfaceSubClass = 0x47;
+				bInterfaceProtocol = 0xD0;
+				bEndpointAddress = 0x81;
+				bEndpointAddressOut = 0x01;
+				bEndpointAddressOutAuto = 0x01;
+				wMaxPacketSize = 64;
+			}
+			else
+			{
+				if (isXBOX)
 				{
-					u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
-					u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
-					dbgprintf("HID:Endpoint %u addr:%02X attr:%02X size:%u interval:%u\r\n", e, EpAddress,
-						*(vu8*)(HIDHeap+EpOffset+3), *(vu16*)(HIDHeap+EpOffset+4), *(vu8*)(HIDHeap+EpOffset+6));
-					if ((EpAddress & 0x80) == 0 && bEndpointAddressOutAuto == 0)
-						bEndpointAddressOutAuto = EpAddress;
-					if (EpLength == 0)
-						break;
-					EpOffset += (EpLength+3)&(~3);
-				}
-
-				if (isXBOne)
-				{
-					// Locate first IN endpoint for Xbox One
-					EpOffset = Offset;
+					// Scan all endpoints to discover the OUT endpoint and locate IN endpoint
+					u32 e, EpOffset = Offset;
+					bEndpointAddressOutAuto = 0;
 					for (e = 0; e < bNumEndpoints && e < 4; ++e)
 					{
 						u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
 						u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
-						if ((EpAddress & 0x80) != 0)
-						{
-							Offset = EpOffset;
-							bEndpointAddress = EpAddress;
-							break;
-						}
+						dbgprintf("HID:Endpoint %u addr:%02X attr:%02X size:%u interval:%u\r\n", e, EpAddress,
+							*(vu8*)(HIDHeap+EpOffset+3), *(vu16*)(HIDHeap+EpOffset+4), *(vu8*)(HIDHeap+EpOffset+6));
+						if ((EpAddress & 0x80) == 0 && bEndpointAddressOutAuto == 0)
+							bEndpointAddressOutAuto = EpAddress;
 						if (EpLength == 0)
 							break;
 						EpOffset += (EpLength+3)&(~3);
 					}
-				}
-				else if (bEndpointAddress != 0x81)
-				{
-					// Locate the 0x81 IN endpoint if it wasn't the first endpoint listed
-					EpOffset = Offset;
-					for (e = 0; e < bNumEndpoints && e < 4; ++e)
-					{
-						u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
-						if (*(vu8*)(HIDHeap+EpOffset+2) == 0x81)
-						{
-							Offset = EpOffset;
-							bEndpointAddress = 0x81;
-							break;
-						}
-						if (EpLength == 0)
-							break;
-						EpOffset += (EpLength+3)&(~3);
-					}
-				}
-			}
-			if (isXBOX360 && bEndpointAddress != 0x81)
-			{
-				// XInput 360: ignore non-controller endpoints
-				dbgprintf("HID:bEndpointAddress:%02X skipped\r\n", bEndpointAddress );
-				continue;
-			}
-			if (isXBOne && (bEndpointAddress & 0x80) == 0)
-			{
-				dbgprintf("HID:XBOne invalid IN endpoint:%02X\r\n", bEndpointAddress );
-				continue;
-			}
 
-			if( (bEndpointAddress & 0xF0) != 0x80 )
-			{
-				bEndpointAddressOut = bEndpointAddress;
-				Offset += (EndpointDescLengthO+3)&(~3);
+					if (isXBOne)
+					{
+						// Locate first IN endpoint for Xbox One
+						EpOffset = Offset;
+						for (e = 0; e < bNumEndpoints && e < 4; ++e)
+						{
+							u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+							u32 EpAddress = *(vu8*)(HIDHeap+EpOffset+2);
+							if ((EpAddress & 0x80) != 0)
+							{
+								Offset = EpOffset;
+								bEndpointAddress = EpAddress;
+								break;
+							}
+							if (EpLength == 0)
+								break;
+							EpOffset += (EpLength+3)&(~3);
+						}
+					}
+					else if (bEndpointAddress != 0x81)
+					{
+						// Locate the 0x81 IN endpoint if it wasn't the first endpoint listed
+						EpOffset = Offset;
+						for (e = 0; e < bNumEndpoints && e < 4; ++e)
+						{
+							u32 EpLength = *(vu8*)(HIDHeap+EpOffset);
+							if (*(vu8*)(HIDHeap+EpOffset+2) == 0x81)
+							{
+								Offset = EpOffset;
+								bEndpointAddress = 0x81;
+								break;
+							}
+							if (EpLength == 0)
+								break;
+							EpOffset += (EpLength+3)&(~3);
+						}
+					}
+				}
+				if (isXBOX360 && bEndpointAddress != 0x81)
+				{
+					// XInput 360: ignore non-controller endpoints
+					dbgprintf("HID:bEndpointAddress:%02X skipped\r\n", bEndpointAddress );
+					continue;
+				}
+				if (isXBOne && (bEndpointAddress & 0x80) == 0)
+				{
+					dbgprintf("HID:XBOne invalid IN endpoint:%02X\r\n", bEndpointAddress );
+					continue;
+				}
+
+				if( (bEndpointAddress & 0xF0) != 0x80 )
+				{
+					bEndpointAddressOut = bEndpointAddress;
+					Offset += (EndpointDescLengthO+3)&(~3);
+				}
+				bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
+				wMaxPacketSize   = *(vu16*)(HIDHeap+Offset+4);
 			}
-			bEndpointAddress = *(vu8*)(HIDHeap+Offset+2);
-			wMaxPacketSize   = *(vu16*)(HIDHeap+Offset+4);
 
 			dbgprintf("HID:bEndpointAddress:%02X\r\n", bEndpointAddress );
 			dbgprintf("HID:wMaxPacketSize  :%u\r\n", wMaxPacketSize );
