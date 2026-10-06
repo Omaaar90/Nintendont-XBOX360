@@ -213,7 +213,7 @@ s32 HIDOpen( u32 LoaderRequest )
 
 	// composite devices such as the Xbox One S pad fail GetDeviceParameters with
 	// -4 at 0xC0, so the buffer has room for a retry with a larger size
-	const s32 length_heap_big = 0x400;
+	const s32 length_heap_big = 0x200;
 	s32 *io_buffer = (s32*)malloca(0x20, 32);
 	u8 *HIDHeap = (u8*)malloca(USB_HID ? length_heap : length_heap_big, 32);
 	u32 i;
