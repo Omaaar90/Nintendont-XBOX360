@@ -249,6 +249,9 @@ int _main( int argc, char *argv[] )
 	memset32((void*)0x13026500, 0, 0x100);
 	sync_after_write((void*)0x13026500, 0x100);
 
+	memset32((void*)0x13005000, 0, sizeof(controller));
+	sync_after_write((void*)0x13005000, sizeof(controller));
+
 	BootStatus(9, s_size, s_cnt);
 
 	DIRegister();

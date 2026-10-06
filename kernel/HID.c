@@ -47,7 +47,7 @@ static u8 *kb_input = (u8*)0x13026C60;
 static const u8 ss_led_pattern[8] = {0x0, 0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18};
 
 static const char DefaultXBOXConfig[] =
-	"Polltype=1\r\n"
+	"\r\nPolltype=1\r\n"
 	"DPAD=0\r\n"
 	"DigitalLR=0\r\n"
 	"A=3,20\r\n"
@@ -536,6 +536,7 @@ s32 HIDOpen( u32 LoaderRequest )
 						f_close(&f);
 					}
 				}
+				memset32((void*)HID_CTRL, 0, sizeof(controller));
 				if(Data != NULL) //initial check
 				{
 					HID_CTRL->VID = ConfigGetValue( Data, "VID", 0 );
@@ -551,8 +552,8 @@ s32 HIDOpen( u32 LoaderRequest )
 					}
 					else if( isXBOX )
 					{
-						HID_CTRL->VID = DeviceVID;
-						HID_CTRL->PID = DevicePID;
+						HID_CTRL->VID = 0x045e;
+						HID_CTRL->PID = 0x028e;
 					}
 				}
 				if(Data == NULL && isXBOX)
@@ -563,8 +564,8 @@ s32 HIDOpen( u32 LoaderRequest )
 					if(Data)
 					{
 						memcpy(Data, DefaultXBOXConfig, cfglen + 1);
-						HID_CTRL->VID = DeviceVID;
-						HID_CTRL->PID = DevicePID;
+						HID_CTRL->VID = 0x045e;
+						HID_CTRL->PID = 0x028e;
 					}
 				}
 				if(Data == NULL)
@@ -789,6 +790,8 @@ s32 HIDOpen( u32 LoaderRequest )
 
 					dbgprintf("HID:Config file for VID:%04X PID:%04X loaded\r\n", HID_CTRL->VID, HID_CTRL->PID );
 				}
+
+				sync_after_write((void*)HID_CTRL, sizeof(controller));
 
 				if( HID_CTRL->Polltype == 0 )
 					MemPacketSize = 128;

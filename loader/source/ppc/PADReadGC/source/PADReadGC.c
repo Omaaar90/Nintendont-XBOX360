@@ -403,7 +403,7 @@ u32 PADRead(u32 calledByGame)
 			if( HID_Packet[HID_CTRL->Up.Offset] & HID_CTRL->Up.Mask )
 				button |= PAD_BUTTON_UP;
 		}
-		else
+		else if(HID_CTRL->DPAD == 1)
 		{
 			if(((HID_Packet[HID_CTRL->Up.Offset] & HID_CTRL->DPADMask) == HID_CTRL->Up.Mask)		 || ((HID_Packet[HID_CTRL->UpLeft.Offset] & HID_CTRL->DPADMask) == HID_CTRL->UpLeft.Mask)			|| ((HID_Packet[HID_CTRL->RightUp.Offset]	& HID_CTRL->DPADMask) == HID_CTRL->RightUp.Mask))
 				button |= PAD_BUTTON_UP;
