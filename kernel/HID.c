@@ -493,7 +493,8 @@ s32 HIDOpen( u32 LoaderRequest )
 							dbgprintf("HID:XInput vendor init=%d\r\n", ret);
 						}
 					}
-					RumbleEnabled = 1;
+					if (DeviceVID != 0x2dc8)
+						RumbleEnabled = 1;
 					XBOXOutBusy = 0;
 					XBOXRumblePending = -1;
 					XBOneGuidePressed = 0;
